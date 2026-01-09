@@ -11,7 +11,7 @@ import fs from 'fs'
 // GOOGLE SHEETS SETUP
 // =====================
 const SPREADSHEET_ID = '1SlNF1NaXSk-NkmEDZWxmj469v14Y1PskdAFgdLxJVtE'
-const SHEET_NAME = 'Hoja 1' // ⚠️ debe llamarse EXACTAMENTE así
+const SHEET_NAME = 'Códigos Rappi' // ⚠️ debe llamarse EXACTAMENTE así
 
 const auth = new google.auth.GoogleAuth({
   keyFile: 'credentials.json',
@@ -94,5 +94,6 @@ async function startBot() {
     })
   })
 }
+
 
 startBot()
