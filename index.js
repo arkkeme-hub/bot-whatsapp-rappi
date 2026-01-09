@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000
 let qrCodeData = null
 
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('./auth')
+  const { state, saveCreds } = await useMultiFileAuthState('/tmp/auth')
 
   const sock = makeWASocket({
     auth: state,
@@ -48,3 +48,4 @@ app.listen(PORT, () => {
 })
 
 startBot()
+
