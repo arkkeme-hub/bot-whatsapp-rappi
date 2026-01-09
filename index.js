@@ -1,51 +1,47 @@
-import express from 'express'
-import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys'
-import QRCode from 'qrcode'
+import makeWASocket, { DisconnectReason, useMultiFileAuthState } from "@whiskeysockets/baileys";
+import express from "express";
+import qrcode from "qrcode";
 
-const app = express()
-const PORT = process.env.PORT || 3000
+const app = express();
+let qrImage = null;
 
-let qrCodeData = null
+app.get("/", async (req, res) => {
+  if (qrImage) {
+    res.send(`
+      <h2>Escanea este QR con WhatsApp</h2>
+      <img src="${qrImage}" />
+    `);
+  } else {
+    res.send("Bot WhatsApp Rappi activo");
+  }
+});
 
-async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('/tmp/auth')
+const startBot = async () => {
+  const { state, saveCreds } = await useMultiFileAuthState("auth");
 
   const sock = makeWASocket({
     auth: state,
-    browser: ['Ubuntu', 'Chrome', '22.04']
-  })
+    browser: ["Ubuntu", "Chrome", "22.04"]
+  });
 
-  sock.ev.on('creds.update', saveCreds)
-
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, qr } = update
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, qr } = update;
 
     if (qr) {
-      qrCodeData = await QRCode.toDataURL(qr)
-      console.log('QR generado')
+      qrImage = await qrcode.toDataURL(qr);
     }
 
-    if (connection === 'open') {
-      console.log('WhatsApp conectado ✅')
-      qrCodeData = null
+    if (connection === "open") {
+      console.log("WhatsApp conectado");
+      qrImage = null;
     }
-  })
-}
+  });
 
-app.get('/', (req, res) => {
-  if (qrCodeData) {
-    res.send(`
-      <h2>Escanea el QR con WhatsApp</h2>
-      <img src="${qrCodeData}" />
-    `)
-  } else {
-    res.send('<h2>Bot conectado o esperando QR...</h2>')
-  }
-})
+  sock.ev.on("creds.update", saveCreds);
+};
 
-app.listen(PORT, () => {
-  console.log('Servidor web activo en puerto', PORT)
-})
+startBot();
 
-startBot()
-
+app.listen(3000, () => {
+  console.log("Servidor web activo");
+});
