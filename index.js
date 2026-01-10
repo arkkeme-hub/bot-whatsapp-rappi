@@ -1,117 +1,105 @@
-import express from 'express'
-import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys'
-import QRCode from 'qrcode'
+import makeWASocket, {
+  DisconnectReason,
+  useMultiFileAuthState
+} from '@whiskeysockets/baileys'
+
 import { google } from 'googleapis'
+import qrcode from 'qrcode-terminal'
 import fs from 'fs'
+import express from 'express'
 
-/* =====================
-   CONFIGURACIÓN
-===================== */
+/* ================= CONFIG ================= */
 
+const SHEET_ID = process.env.SHEET_ID
+const SHEET_NAME = process.env.SHEET_NAME || 'Hoja 1'
 const PORT = process.env.PORT || 3000
 
-// Google Sheets
-const SHEET_ID = '1SlNF1NaXSk-NkmEDZWxmj469v14Y1PskdAFgdLxJVtE'
-const SHEET_NAME = 'Hoja 1' // cambia si tu hoja tiene otro nombre
+/* ============== GOOGLE SHEETS ============== */
 
-// Credenciales (archivo credentials.json)
-const CREDENTIALS_PATH = './credentials.json'
-
-/* =====================
-   EXPRESS
-===================== */
-
-const app = express()
-let qrCodeData = null
-
-app.get('/', (req, res) => {
-  if (qrCodeData) {
-    res.send(`
-      <h2>Escanea el QR con WhatsApp</h2>
-      <img src="${qrCodeData}" />
-    `)
-  } else {
-    res.send('<h2>Bot conectado o esperando QR...</h2>')
-  }
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly']
 })
 
-app.listen(PORT, () => {
-  console.log('Servidor web activo en puerto', PORT)
-})
+const sheets = google.sheets({ version: 'v4', auth })
 
-/* =====================
-   GOOGLE SHEETS
-===================== */
-
-async function getSheetsClient() {
-  const auth = new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS_PATH,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets']
-  })
-
-  const client = await auth.getClient()
-  return google.sheets({ version: 'v4', auth: client })
-}
-
-async function appendToSheet(code, store) {
-  const sheets = await getSheetsClient()
-
-  await sheets.spreadsheets.values.append({
+async function getCodes() {
+  const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: ${SHEET_NAME}!A:B,
-    valueInputOption: 'RAW',
-    requestBody: {
-      values: [[code, store]]
-    }
+    range: ${SHEET_NAME}!A:B
   })
 
-  console.log('Guardado en Sheets:', code, store)
+  return res.data.values || []
 }
 
-/* =====================
-   WHATSAPP BOT
-===================== */
+/* ================= WHATSAPP ================= */
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth')
 
   const sock = makeWASocket({
     auth: state,
-    browser: ['Ubuntu', 'Chrome', '22.04']
+    printQRInTerminal: false
+  })
+
+  sock.ev.on('connection.update', (update) => {
+    const { connection, qr } = update
+
+    if (qr) {
+      qrcode.generate(qr, { small: true })
+      console.log('📲 Escanea el QR')
+    }
+
+    if (connection === 'close') {
+      const shouldReconnect =
+        update.lastDisconnect?.error?.output?.statusCode !==
+        DisconnectReason.loggedOut
+
+      if (shouldReconnect) startBot()
+    }
+
+    if (connection === 'open') {
+      console.log('✅ WhatsApp conectado')
+    }
   })
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, qr } = update
-
-    if (qr) {
-      qrCodeData = await QRCode.toDataURL(qr)
-      console.log('QR generado')
-    }
-
-    if (connection === 'open') {
-      console.log('WhatsApp conectado ✅')
-      qrCodeData = null
-    }
-  })
-
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
-    if (!msg.message || !msg.message.conversation) return
+    if (!msg.message || msg.key.fromMe) return
 
-    const text = msg.message.conversation.trim()
+    const text =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text
 
-    // Regla: código + nombre tienda (ej: "3484 AC Asados Al Carbón Centro")
-    const match = text.match(/^(\d{3,6})\s+(.+)/)
+    if (!text) return
 
-    if (!match) return
+    const codes = await getCodes()
+    const found = codes.find(row => row[0] === text)
 
-    const code = match[1]
-    const store = match[2]
-
-    await appendToSheet(code, store)
+    if (found) {
+      await sock.sendMessage(msg.key.remoteJid, {
+        text: ✅ Código válido: ${found[1]}
+      })
+    } else {
+      await sock.sendMessage(msg.key.remoteJid, {
+        text: '❌ Código no encontrado'
+      })
+    }
   })
 }
+
+/* ================= SERVER ================= */
+
+const app = express()
+
+app.get('/', (req, res) => {
+  res.send('Bot WhatsApp Rappi activo')
+})
+
+app.listen(PORT, () => {
+  console.log(🌐 Servidor en puerto ${PORT})
+})
 
 startBot()
