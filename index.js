@@ -1,69 +1,78 @@
 import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  DisconnectReason
 } from '@whiskeysockets/baileys'
 
-import { google } from 'googleapis'
 import qrcode from 'qrcode-terminal'
-import fs from 'fs'
-import express from 'express'
+import P from 'pino'
+import { google } from 'googleapis'
 
-/* ================= CONFIG ================= */
+/* =======================
+   CONFIGURACIÓN
+======================= */
 
-const SHEET_ID = process.env.SHEET_ID
-const SHEET_NAME = process.env.SHEET_NAME || 'Hoja 1'
-const PORT = process.env.PORT || 3000
+const SPREADSHEET_ID = '1SlNF1NaXSk-NkmEDZWxmj469v14Y1PskdAFgdLxJVtE'
+const SHEET_NAME = 'Códigos Organizados' // 
 
-/* ============== GOOGLE SHEETS ============== */
+console.log('INICIANDO BOT...')
 
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
-  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly']
-})
+/* =======================
+   BOT
+======================= */
 
-const sheets = google.sheets({ version: 'v4', auth })
-
-async function getCodes() {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: ${SHEET_NAME}!A:B
-  })
-
-  return res.data.values || []
-}
-
-/* ================= WHATSAPP ================= */
-
-async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('./auth')
+async function startBot () {
+  // Auth WhatsApp
+  const { state, saveCreds } = await useMultiFileAuthState('auth')
+  const { version } = await fetchLatestBaileysVersion()
 
   const sock = makeWASocket({
+    version,
     auth: state,
+    logger: P({ level: 'silent' }),
+    browser: ['Chrome', 'Windows', '20'],
     printQRInTerminal: false
   })
 
+  sock.ev.on('creds.update', saveCreds)
+
+  // Google Sheets auth
+  const auth = new google.auth.GoogleAuth({
+    keyFile: 'credentials.json',
+    scopes: ['https://www.googleapis.com/auth/spreadsheets']
+  })
+
+  const sheets = google.sheets({ version: 'v4', auth })
+
+  /* =======================
+     CONEXIÓN WHATSAPP
+  ======================= */
+
   sock.ev.on('connection.update', (update) => {
-    const { connection, qr } = update
+    const { connection, qr, lastDisconnect } = update
 
     if (qr) {
+      console.log('📱 ESCANEA ESTE QR')
       qrcode.generate(qr, { small: true })
-      console.log('📲 Escanea el QR')
-    }
-
-    if (connection === 'close') {
-      const shouldReconnect =
-        update.lastDisconnect?.error?.output?.statusCode !==
-        DisconnectReason.loggedOut
-
-      if (shouldReconnect) startBot()
     }
 
     if (connection === 'open') {
-      console.log('✅ WhatsApp conectado')
+      console.log('✅ CONECTADO A WHATSAPP')
+    }
+
+    if (connection === 'close') {
+      const code = lastDisconnect?.error?.output?.statusCode
+      console.log('❌ CONEXIÓN CERRADA - código:', code)
+
+      if (code !== DisconnectReason.loggedOut) {
+        startBot()
+      }
     }
   })
 
-  sock.ev.on('creds.update', saveCreds)
+  /* =======================
+     MENSAJES
+  ======================= */
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
@@ -75,31 +84,51 @@ async function startBot() {
 
     if (!text) return
 
-    const codes = await getCodes()
-    const found = codes.find(row => row[0] === text)
+    /*
+      Regla:
+      - Detecta mensajes tipo:
+        3484 – AC Asados Al Carbón Centro
+        3484 AC Asados Al Carbón Centro
+    */
 
-    if (found) {
-      await sock.sendMessage(msg.key.remoteJid, {
-        text: ✅ Código válido: ${found[1]}
+    const match = text.match(/^(\d{3,6})\s*[-–]?\s*(.+)$/)
+    if (!match) return
+
+    const codigo = match[1].trim()
+    const tienda = match[2].trim()
+
+    try {
+      // Leer códigos existentes
+      const existing = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: '${SHEET_NAME}!A:A'
       })
-    } else {
-      await sock.sendMessage(msg.key.remoteJid, {
-        text: '❌ Código no encontrado'
+
+      const codes = existing.data.values
+        ? existing.data.values.flat()
+        : []
+
+      if (codes.includes(codigo)) {
+        console.log('⏩ DUPLICADO IGNORADO:', codigo)
+        return
+      }
+
+      // Guardar nuevo registro
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: '${SHEET_NAME}!A:B',
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[codigo, tienda]]
+        }
       })
+
+      console.log('✅ GUARDADO:', codigo, tienda)
+
+    } catch (err) {
+      console.error('❌ ERROR GOOGLE SHEETS:', err.message)
     }
   })
 }
-
-/* ================= SERVER ================= */
-
-const app = express()
-
-app.get('/', (req, res) => {
-  res.send('Bot WhatsApp Rappi activo')
-})
-
-app.listen(PORT, () => {
-  console.log(🌐 Servidor en puerto ${PORT})
-})
 
 startBot()
